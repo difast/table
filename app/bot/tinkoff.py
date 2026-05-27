@@ -1,140 +1,155 @@
 """
-Thin async wrapper around tinkoff-invest-api SDK.
-Handles sandbox / live switching transparently.
+Async REST client for Tinkoff Invest API v2.
+Uses httpx — no gRPC SDK required.
+Docs: https://tinkoff.github.io/investAPI/
 """
 from __future__ import annotations
-import asyncio
+import httpx
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 from typing import List, Optional, Dict, Any
 
-from tinkoff.invest import (
-    AsyncClient,
-    CandleInterval,
-    OrderDirection,
-    OrderType,
-    Quotation,
-    InstrumentStatus,
-    RequestError,
-)
-from tinkoff.invest.sandbox.client import SandboxAsyncClient
+SANDBOX_URL = "https://sandbox-invest-public-api.tinkoff.ru/rest"
+LIVE_URL    = "https://invest-public-api.tinkoff.ru/rest"
 
 CANDLE_INTERVALS = {
-    "1min":  CandleInterval.CANDLE_INTERVAL_1_MIN,
-    "5min":  CandleInterval.CANDLE_INTERVAL_5_MIN,
-    "15min": CandleInterval.CANDLE_INTERVAL_15_MIN,
-    "1hour": CandleInterval.CANDLE_INTERVAL_HOUR,
-    "1day":  CandleInterval.CANDLE_INTERVAL_DAY,
+    "1min":  "CANDLE_INTERVAL_1_MIN",
+    "5min":  "CANDLE_INTERVAL_5_MIN",
+    "15min": "CANDLE_INTERVAL_15_MIN",
+    "1hour": "CANDLE_INTERVAL_HOUR",
+    "1day":  "CANDLE_INTERVAL_DAY",
+}
+
+CANDLE_LOOKBACK = {
+    "1min":  timedelta(hours=2),
+    "5min":  timedelta(hours=10),
+    "15min": timedelta(days=2),
+    "1hour": timedelta(days=7),
+    "1day":  timedelta(days=100),
 }
 
 
-def _q_to_float(q: Quotation) -> float:
-    return q.units + q.nano / 1e9
+def _q(obj: dict | None) -> float:
+    if not obj:
+        return 0.0
+    return float(obj.get("units", 0)) + obj.get("nano", 0) / 1e9
 
 
-def _float_to_q(value: float) -> Quotation:
+def _to_q(value: float) -> dict:
     units = int(value)
-    nano = round((value - units) * 1e9)
-    return Quotation(units=units, nano=nano)
+    nano = round((value - units) * 1_000_000_000)
+    return {"units": str(units), "nano": nano}
 
 
-def _client_cls(mode: str):
-    return SandboxAsyncClient if mode == "sandbox" else AsyncClient
+def _fmt_dt(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class TinkoffClient:
     def __init__(self, token: str, mode: str = "sandbox"):
         self.token = token
-        self.mode = mode
+        self.mode  = mode
+        self.base  = SANDBOX_URL if mode == "sandbox" else LIVE_URL
 
-    def _client(self):
-        return _client_cls(self.mode)(self.token)
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type":  "application/json",
+        }
+
+    async def _post(self, service: str, method: str, body: dict = None) -> dict:
+        url = f"{self.base}/tinkoff.public.invest.api.contract.v1.{service}/{method}"
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(url, headers=self._headers(), json=body or {})
+            r.raise_for_status()
+            return r.json()
+
+    async def _sandbox(self, method: str, body: dict = None) -> dict:
+        return await self._post("SandboxService", method, body)
+
+    # ------------------------------------------------------------------ accounts
 
     async def get_accounts(self) -> List[Dict[str, Any]]:
-        async with self._client() as c:
-            if self.mode == "sandbox":
-                resp = await c.sandbox.get_sandbox_accounts()
-            else:
-                resp = await c.users.get_accounts()
-            return [
-                {"id": a.id, "name": getattr(a, "name", ""), "type": str(a.type)}
-                for a in resp.accounts
-            ]
+        if self.mode == "sandbox":
+            data = await self._sandbox("GetSandboxAccounts")
+        else:
+            data = await self._post("UsersService", "GetAccounts")
+        return [
+            {"id": a.get("id", ""), "name": a.get("name", ""), "type": a.get("type", "")}
+            for a in data.get("accounts", [])
+        ]
 
     async def ensure_sandbox_account(self) -> str:
-        """Open a sandbox account if none exist; return account_id."""
         accounts = await self.get_accounts()
         if accounts:
             return accounts[0]["id"]
-        async with self._client() as c:
-            resp = await c.sandbox.open_sandbox_account()
-            return resp.account_id
+        data = await self._sandbox("OpenSandboxAccount")
+        return data.get("accountId", "")
+
+    # ------------------------------------------------------------------ portfolio
 
     async def get_portfolio(self, account_id: str) -> List[Dict[str, Any]]:
-        async with self._client() as c:
-            if self.mode == "sandbox":
-                resp = await c.sandbox.get_sandbox_portfolio(account_id=account_id)
-            else:
-                resp = await c.operations.get_portfolio(account_id=account_id)
-            result = []
-            for pos in resp.positions:
-                avg = _q_to_float(pos.average_position_price) if pos.average_position_price else 0
-                cur = _q_to_float(pos.current_price) if pos.current_price else 0
-                qty = _q_to_float(pos.quantity) if pos.quantity else 0
-                pnl = _q_to_float(pos.expected_yield) if pos.expected_yield else 0
-                pnl_pct = (pnl / (avg * qty) * 100) if avg and qty else 0
-                result.append({
-                    "figi": pos.figi,
-                    "instrument": pos.figi,
-                    "quantity": qty,
-                    "avg_price": avg,
-                    "current_price": cur,
-                    "value": cur * qty,
-                    "pnl": pnl,
-                    "pnl_pct": round(pnl_pct, 2),
-                    "currency": pos.average_position_price.currency if pos.average_position_price else "RUB",
-                })
-            return result
+        if self.mode == "sandbox":
+            data = await self._sandbox("GetSandboxPortfolio", {"accountId": account_id})
+        else:
+            data = await self._post("OperationsService", "GetPortfolio", {"accountId": account_id})
+        result = []
+        for pos in data.get("positions", []):
+            qty     = _q(pos.get("quantity"))
+            avg     = _q(pos.get("averagePositionPrice"))
+            cur     = _q(pos.get("currentPrice"))
+            pnl     = _q(pos.get("expectedYield"))
+            pnl_pct = (pnl / (avg * qty) * 100) if avg and qty else 0.0
+            result.append({
+                "figi":          pos.get("figi", ""),
+                "instrument":    pos.get("figi", ""),
+                "quantity":      qty,
+                "avg_price":     avg,
+                "current_price": cur,
+                "value":         cur * qty,
+                "pnl":           pnl,
+                "pnl_pct":       round(pnl_pct, 2),
+                "currency":      pos.get("averagePositionPrice", {}).get("currency", "RUB"),
+            })
+        return result
+
+    # ------------------------------------------------------------------ market data
 
     async def get_candles(
         self,
         figi: str,
-        interval: str = "1min",
+        interval: str = "1hour",
         from_dt: Optional[datetime] = None,
-        to_dt: Optional[datetime] = None,
-        limit: int = 100,
-    ) -> List[Dict[str, float]]:
+        to_dt:   Optional[datetime] = None,
+        limit:   int = 100,
+    ) -> List[Dict]:
         if not from_dt:
-            delta_map = {
-                "1min": timedelta(hours=2),
-                "5min": timedelta(hours=10),
-                "15min": timedelta(days=2),
-                "1hour": timedelta(days=7),
-                "1day": timedelta(days=limit),
-            }
-            from_dt = datetime.now(timezone.utc) - delta_map.get(interval, timedelta(hours=2))
+            from_dt = datetime.now(timezone.utc) - CANDLE_LOOKBACK.get(interval, timedelta(days=2))
         if not to_dt:
             to_dt = datetime.now(timezone.utc)
 
-        ci = CANDLE_INTERVALS.get(interval, CandleInterval.CANDLE_INTERVAL_1_MIN)
-        async with self._client() as c:
-            resp = await c.market_data.get_candles(figi=figi, from_=from_dt, to=to_dt, interval=ci)
-            return [
-                {
-                    "time": candle.time.isoformat(),
-                    "open": _q_to_float(candle.open),
-                    "high": _q_to_float(candle.high),
-                    "low": _q_to_float(candle.low),
-                    "close": _q_to_float(candle.close),
-                    "volume": candle.volume,
-                }
-                for candle in resp.candles
-            ]
+        data = await self._post("MarketDataService", "GetCandles", {
+            "figi":     figi,
+            "from":     _fmt_dt(from_dt),
+            "to":       _fmt_dt(to_dt),
+            "interval": CANDLE_INTERVALS.get(interval, "CANDLE_INTERVAL_HOUR"),
+        })
+        return [
+            {
+                "time":   c.get("time", ""),
+                "open":   _q(c.get("open")),
+                "high":   _q(c.get("high")),
+                "low":    _q(c.get("low")),
+                "close":  _q(c.get("close")),
+                "volume": int(c.get("volume", 0)),
+            }
+            for c in data.get("candles", [])
+        ]
 
     async def get_last_price(self, figis: List[str]) -> Dict[str, float]:
-        async with self._client() as c:
-            resp = await c.market_data.get_last_prices(figi=figis)
-            return {lp.figi: _q_to_float(lp.price) for lp in resp.last_prices}
+        data = await self._post("MarketDataService", "GetLastPrices", {"figi": figis})
+        return {lp.get("figi", ""): _q(lp.get("price")) for lp in data.get("lastPrices", [])}
+
+    # ------------------------------------------------------------------ orders
 
     async def place_order(
         self,
@@ -144,48 +159,41 @@ class TinkoffClient:
         quantity: int,
         price: Optional[float] = None,
     ) -> Dict[str, Any]:
-        order_dir = OrderDirection.ORDER_DIRECTION_BUY if direction == "buy" else OrderDirection.ORDER_DIRECTION_SELL
-        order_type = OrderType.ORDER_TYPE_MARKET if price is None else OrderType.ORDER_TYPE_LIMIT
+        body = {
+            "accountId": account_id,
+            "figi":      figi,
+            "quantity":  str(quantity),
+            "direction": "ORDER_DIRECTION_BUY" if direction == "buy" else "ORDER_DIRECTION_SELL",
+            "orderType": "ORDER_TYPE_MARKET" if price is None else "ORDER_TYPE_LIMIT",
+            "orderId":   str(int(datetime.now().timestamp() * 1000)),
+        }
+        if price is not None:
+            body["price"] = _to_q(price)
 
-        async with self._client() as c:
-            if self.mode == "sandbox":
-                resp = await c.sandbox.post_sandbox_order(
-                    account_id=account_id,
-                    figi=figi,
-                    quantity=quantity,
-                    direction=order_dir,
-                    order_type=order_type,
-                    price=_float_to_q(price) if price else None,
-                    order_id=str(int(datetime.now().timestamp() * 1000)),
-                )
-            else:
-                resp = await c.orders.post_order(
-                    account_id=account_id,
-                    figi=figi,
-                    quantity=quantity,
-                    direction=order_dir,
-                    order_type=order_type,
-                    price=_float_to_q(price) if price else None,
-                    order_id=str(int(datetime.now().timestamp() * 1000)),
-                )
-            executed_price = _q_to_float(resp.executed_order_price) if resp.executed_order_price else (price or 0)
-            return {
-                "order_id": resp.order_id,
-                "status": str(resp.execution_report_status),
-                "price": executed_price,
-                "total": executed_price * quantity,
-            }
+        if self.mode == "sandbox":
+            data = await self._sandbox("PostSandboxOrder", body)
+        else:
+            data = await self._post("OrdersService", "PostOrder", body)
+
+        exec_price = _q(data.get("executedOrderPrice")) or price or 0.0
+        return {
+            "order_id": data.get("orderId", ""),
+            "status":   data.get("executionReportStatus", ""),
+            "price":    exec_price,
+            "total":    exec_price * quantity,
+        }
+
+    # ------------------------------------------------------------------ instruments
 
     async def search_instruments(self, query: str) -> List[Dict[str, Any]]:
-        async with self._client() as c:
-            resp = await c.instruments.find_instrument(query=query)
-            return [
-                {
-                    "figi": i.figi,
-                    "ticker": i.ticker,
-                    "name": i.name,
-                    "currency": i.currency,
-                    "instrument_type": i.instrument_type,
-                }
-                for i in resp.instruments[:20]
-            ]
+        data = await self._post("InstrumentsService", "FindInstrument", {"query": query})
+        return [
+            {
+                "figi":            i.get("figi", ""),
+                "ticker":          i.get("ticker", ""),
+                "name":            i.get("name", ""),
+                "currency":        i.get("currency", ""),
+                "instrument_type": i.get("instrumentType", ""),
+            }
+            for i in data.get("instruments", [])[:20]
+        ]
