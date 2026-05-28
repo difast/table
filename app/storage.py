@@ -14,6 +14,7 @@ _defaults: Dict[str, Any] = {
         "rsi": {"period": 14, "overbought": 70, "oversold": 30, "quantity": 1},
         "macd": {"fast": 12, "slow": 26, "signal": 9, "quantity": 1},
         "bollinger": {"period": 20, "std_dev": 2.0, "quantity": 1},
+        "scalping": {"fast": 9, "slow": 21, "quantity": 1},
     },
     "candle_interval": "1min",  # 1min | 5min | 15min | 1hour | 1day
     "tick_interval_sec": 60,

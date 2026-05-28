@@ -79,5 +79,11 @@ def list_strategies():
                 "description": "Покупка при пробое нижней полосы вверх, продажа при пробое верхней вниз",
                 "params": ["period", "std_dev", "quantity"],
             },
+            {
+                "id": "scalping",
+                "name": "Scalping (EMA)",
+                "description": "Покупка при пересечении быстрой EMA(9) выше медленной EMA(21), продажа — ниже",
+                "params": ["fast", "slow", "quantity"],
+            },
         ]
     }

@@ -12,6 +12,7 @@ from app.bot.tinkoff import TinkoffClient
 from app.bot.strategies.rsi import RSIStrategy
 from app.bot.strategies.macd import MACDStrategy
 from app.bot.strategies.bollinger import BollingerStrategy
+from app.bot.strategies.scalping import ScalpingStrategy
 from app.bot.strategies.base import Signal
 
 logger = logging.getLogger("bot.engine")
@@ -20,6 +21,7 @@ STRATEGIES = {
     "rsi": RSIStrategy,
     "macd": MACDStrategy,
     "bollinger": BollingerStrategy,
+    "scalping": ScalpingStrategy,
 }
 
 # Shared state (in-process only, reset on restart)
