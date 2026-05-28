@@ -183,6 +183,15 @@ class TinkoffClient:
             "total":    exec_price * quantity,
         }
 
+    # ------------------------------------------------------------------ sandbox utils
+
+    async def sandbox_topup(self, account_id: str, amount: float = 100000) -> dict:
+        data = await self._sandbox("SandboxPayIn", {
+            "accountId": account_id,
+            "amount": {"currency": "rub", "units": str(int(amount)), "nano": 0},
+        })
+        return data
+
     # ------------------------------------------------------------------ instruments
 
     async def search_instruments(self, query: str) -> List[Dict[str, Any]]:
