@@ -45,6 +45,7 @@ class BotConfigOut(BaseModel):
     candle_interval: str
     tick_interval_sec: int
     has_token: bool
+    token_preview: str
 
 
 class StatusOut(BaseModel):

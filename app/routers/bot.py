@@ -39,6 +39,7 @@ def get_config():
         "candle_interval": cfg["candle_interval"],
         "tick_interval_sec": cfg["tick_interval_sec"],
         "has_token": bool(cfg.get("api_token")),
+        "token_preview": (cfg["api_token"][:6] + "***") if len(cfg.get("api_token","")) > 6 else ("***" if cfg.get("api_token") else ""),
     }
 
 
