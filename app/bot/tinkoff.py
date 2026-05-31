@@ -162,7 +162,7 @@ class TinkoffClient:
         body = {
             "accountId": account_id,
             "figi":      figi,
-            "quantity":  str(quantity),
+            "quantity":  quantity,
             "direction": "ORDER_DIRECTION_BUY" if direction == "buy" else "ORDER_DIRECTION_SELL",
             "orderType": "ORDER_TYPE_MARKET" if price is None else "ORDER_TYPE_LIMIT",
             "orderId":   str(int(datetime.now().timestamp() * 1000)),
@@ -188,14 +188,14 @@ class TinkoffClient:
     async def sandbox_topup(self, account_id: str, amount: float = 100000) -> dict:
         data = await self._sandbox("SandboxPayIn", {
             "accountId": account_id,
-            "amount": {"currency": "rub", "units": str(int(amount)), "nano": 0},
+            "amount": {"currency": "RUB", "units": str(int(amount)), "nano": 0},
         })
         return data
 
     # ------------------------------------------------------------------ instruments
 
     async def search_instruments(self, query: str) -> List[Dict[str, Any]]:
-        data = await self._post("InstrumentsService", "FindInstrument", {"query": query})
+        data = await self._post("InstrumentsService", "FindInstrument", {"query": query, "apiTradeAvailableFlag": True})
         return [
             {
                 "figi":            i.get("figi", ""),
