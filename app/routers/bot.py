@@ -17,12 +17,19 @@ def start():
     if not cfg.get("api_token"):
         return {"ok": False, "error": "API token not configured"}
     ok = engine.start_bot()
+    if ok:
+        cfg["active"] = True
+        save_config(cfg)
     return {"ok": ok, "message": "Bot started" if ok else "Already running"}
 
 
 @router.post("/stop")
 def stop():
     ok = engine.stop_bot()
+    if ok:
+        cfg = load_config()
+        cfg["active"] = False
+        save_config(cfg)
     return {"ok": ok, "message": "Bot stopped" if ok else "Not running"}
 
 

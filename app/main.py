@@ -16,6 +16,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelna
 async def lifespan(app: FastAPI):
     await init_db()
     bot_engine.set_session_factory(SessionLocal)
+    # Auto-restart bot if it was active before redeploy
+    from app.storage import load_config
+    cfg = load_config()
+    if cfg.get("active") and cfg.get("api_token"):
+        logging.getLogger("main").info("Auto-restarting bot (was active before redeploy)")
+        bot_engine.start_bot()
     yield
     bot_engine.stop_bot()
 
